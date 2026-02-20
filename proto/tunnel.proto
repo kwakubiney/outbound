@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package outbound.tunnel;
+
+option go_package = "outbound/proto;tunnelpb";
+
+service TunnelService {
+  rpc Connect(stream TunnelMessage) returns (stream TunnelMessage) {}
+}
+
+message TunnelMessage {
+  oneof msg {
+    RegisterRequest register = 1;
+    RegisterAck register_ack = 2;
+
+    RequestStart req_start = 10;
+
+    ResponseStart res_start = 20;
+
+    Error error = 30;
+    Ping ping = 40;
+    Pong pong = 41;
+  }
+}
+
+message RegisterRequest {
+  string agent_id = 1;
+  repeated Service services = 2;
+}
+
+message Service {
+  string name = 1;
+  uint32 port = 2;
+}
+
+message RegisterAck {
+  bool ok = 1;
+  string message = 2;
+}
+
+message RequestStart {
+  string request_id = 1;
+  string agent_id = 2;
+  string service = 3;
+  string method = 4;
+  string path = 5;
+  map<string, string> headers = 6;
+  bytes body = 7;
+}
+
+message ResponseStart {
+  string request_id = 1;
+  int32 status = 2;
+  map<string, string> headers = 3;
+  bytes body = 4;
+}
+
+message Error {
+  string request_id = 1;
+  int32 code = 2;
+  string message = 3;
+}
+
+message Ping {
+  int64 ts_unix_ms = 1;
+}
+
+message Pong {
+  int64 ts_unix_ms = 1;
+}
