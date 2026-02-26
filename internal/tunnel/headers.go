@@ -9,6 +9,7 @@ import (
 const (
 	HeaderAgent   = "X-Outbound-Agent"
 	HeaderService = "X-Outbound-Service"
+	HeaderAuth    = "X-Outbound-Authorization"
 )
 
 var hopByHopHeaders = map[string]struct{}{

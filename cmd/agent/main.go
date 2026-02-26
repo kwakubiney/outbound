@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"flag"
 	"log"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"outbound/internal/agent"
 	"outbound/internal/config"
@@ -18,8 +20,13 @@ func main() {
 	var services config.ServiceFlag
 	agentID := flag.String("id", "", "Agent identifier")
 	edgeAddr := flag.String("edge", "localhost:8081", "Edge gRPC address")
+	insecureConn := flag.Bool("insecure", false, "Disable TLS for the agent-to-edge gRPC connection (plain text)")
 	flag.Var(&services, "service", "Service mapping name=port (repeatable)")
 	flag.Parse()
+
+	if *insecureConn {
+		log.Printf("WARNING: the connection from this agent to the edge is unencrypted plain gRPC. Ensure the agent-to-edge link is secured at the network level (VPN, private network, or a TLS-terminating reverse proxy on both ports) before transmitting sensitive data.")
+	}
 
 	if *agentID == "" {
 		generated, err := generateID()
@@ -31,10 +38,10 @@ func main() {
 	}
 
 	if len(services.Entries) == 0 {
-		log.Fatalf("at least one --service name=port is required")
+		log.Fatalf("at least one --service is required")
 	}
 
-	conn, err := grpc.NewClient(*edgeAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(*edgeAddr, grpc.WithTransportCredentials(buildCredentials(*insecureConn)))
 	if err != nil {
 		log.Fatalf("failed to connect to edge: %v", err)
 	}
@@ -60,4 +67,11 @@ func generateID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+func buildCredentials(insecureMode bool) credentials.TransportCredentials {
+	if insecureMode {
+		return insecure.NewCredentials()
+	}
+	return credentials.NewTLS(&tls.Config{})
 }

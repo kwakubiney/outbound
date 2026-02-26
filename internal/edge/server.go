@@ -4,15 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"google.golang.org/grpc"
 	"io"
 	"net/http"
+	"outbound/internal/tunnel"
+	tunnelpb "outbound/proto"
 	"strings"
 	"sync"
 	"time"
-
-	"google.golang.org/grpc"
-	"outbound/internal/tunnel"
-	tunnelpb "outbound/proto"
 )
 
 // Session represents a single agent connection and its active request state.
@@ -34,16 +33,32 @@ type pendingResponse struct {
 	errCh  chan error
 }
 
+// ServerConfig holds configurable parameters for the edge server.
+type ServerConfig struct {
+	RequestTimeout time.Duration
+	MaxRequestBody int64
+}
+
 // Server is the edge entry point that accepts HTTP and forwards over gRPC.
 type Server struct {
 	tunnelpb.UnimplementedTunnelServiceServer
+
+	config ServerConfig
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
 }
 
-func NewServer() *Server {
+func NewServer(config ServerConfig) *Server {
+	// Apply defaults
+	if config.RequestTimeout <= 0 {
+		config.RequestTimeout = 30 * time.Second
+	}
+	if config.MaxRequestBody <= 0 {
+		config.MaxRequestBody = 10 * 1024 * 1024 // 10MB
+	}
 	return &Server{
+		config:   config,
 		sessions: make(map[string]*Session),
 	}
 }
@@ -81,7 +96,6 @@ func (s *Server) handleMessage(session *Session, msg *tunnelpb.TunnelMessage) {
 		}
 		session.services = services
 		s.attachSession(session)
-
 		ack := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_RegisterAck{RegisterAck: &tunnelpb.RegisterAck{Ok: true}}}
 		_ = s.send(session, ack)
 	case *tunnelpb.TunnelMessage_ResStart:
@@ -131,11 +145,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	session := s.lookupSession(agentID)
 	if session == nil {
-		http.Error(w, "agent unavailable", http.StatusBadGateway)
+		http.Error(w, "agent unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	if _, ok := session.services[service]; !ok {
-		http.Error(w, "service not found", http.StatusNotFound)
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -149,9 +163,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer s.clearPending(session, requestID)
 
 	defer r.Body.Close()
-	body, err := io.ReadAll(r.Body)
+	limitedBody := io.LimitReader(r.Body, s.config.MaxRequestBody+1)
+	body, err := io.ReadAll(limitedBody)
 	if err != nil {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		return
+	}
+	if int64(len(body)) > s.config.MaxRequestBody {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -183,8 +202,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case err := <-pending.errCh:
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
-	case <-time.After(10 * time.Second):
+	case <-time.After(s.config.RequestTimeout):
 		http.Error(w, "agent response timeout", http.StatusGatewayTimeout)
+		return
+	case <-r.Context().Done():
 		return
 	}
 }

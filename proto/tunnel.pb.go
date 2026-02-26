@@ -187,6 +187,7 @@ type RegisterRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
 	Services      []*Service             `protobuf:"bytes,2,rep,name=services,proto3" json:"services,omitempty"`
+	Token         string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -233,6 +234,13 @@ func (x *RegisterRequest) GetServices() []*Service {
 		return x.Services
 	}
 	return nil
+}
+
+func (x *RegisterRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
 }
 
 type Service struct {
@@ -661,10 +669,11 @@ const file_proto_tunnel_proto_rawDesc = "" +
 	"\x05error\x18\x1e \x01(\v2\x16.outbound.tunnel.ErrorH\x00R\x05error\x12+\n" +
 	"\x04ping\x18( \x01(\v2\x15.outbound.tunnel.PingH\x00R\x04ping\x12+\n" +
 	"\x04pong\x18) \x01(\v2\x15.outbound.tunnel.PongH\x00R\x04pongB\x05\n" +
-	"\x03msg\"b\n" +
+	"\x03msg\"x\n" +
 	"\x0fRegisterRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x124\n" +
-	"\bservices\x18\x02 \x03(\v2\x18.outbound.tunnel.ServiceR\bservices\"1\n" +
+	"\bservices\x18\x02 \x03(\v2\x18.outbound.tunnel.ServiceR\bservices\x12\x14\n" +
+	"\x05token\x18\x03 \x01(\tR\x05token\"1\n" +
 	"\aService\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\rR\x04port\"7\n" +

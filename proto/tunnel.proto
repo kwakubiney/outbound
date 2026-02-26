@@ -26,6 +26,7 @@ message TunnelMessage {
 message RegisterRequest {
   string agent_id = 1;
   repeated Service services = 2;
+  string token = 3;
 }
 
 message Service {

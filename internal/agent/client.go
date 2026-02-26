@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,6 +36,9 @@ func (c *Client) Run(ctx context.Context, stream tunnelpb.TunnelService_ConnectC
 	if err := c.register(); err != nil {
 		return err
 	}
+	if err := c.awaitRegisterAck(); err != nil {
+		return err
+	}
 
 	for {
 		msg, err := stream.Recv()
@@ -45,6 +49,30 @@ func (c *Client) Run(ctx context.Context, stream tunnelpb.TunnelService_ConnectC
 		switch payload := msg.Msg.(type) {
 		case *tunnelpb.TunnelMessage_ReqStart:
 			go c.handleRequest(ctx, payload.ReqStart)
+		case *tunnelpb.TunnelMessage_Ping:
+			pong := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_Pong{Pong: &tunnelpb.Pong{TsUnixMs: payload.Ping.TsUnixMs}}}
+			_ = c.send(pong)
+		}
+	}
+}
+
+func (c *Client) awaitRegisterAck() error {
+	for {
+		msg, err := c.stream.Recv()
+		if err != nil {
+			return err
+		}
+
+		switch payload := msg.Msg.(type) {
+		case *tunnelpb.TunnelMessage_RegisterAck:
+			if payload.RegisterAck.GetOk() {
+				return nil
+			}
+			message := strings.TrimSpace(payload.RegisterAck.GetMessage())
+			if message == "" {
+				message = "registration rejected"
+			}
+			return errors.New(message)
 		case *tunnelpb.TunnelMessage_Ping:
 			pong := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_Pong{Pong: &tunnelpb.Pong{TsUnixMs: payload.Ping.TsUnixMs}}}
 			_ = c.send(pong)
