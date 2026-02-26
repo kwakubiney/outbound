@@ -93,15 +93,13 @@ edge.example.com {
 
 Keep both ports bound to `127.0.0.1` so only the proxy can reach them.
 
-## Security
+## TODO
 
-Outbound is a v1 proof-of-concept. Known gaps:
-
-- **No agent authentication.** Any gRPC client that can reach `:8081` can register as any agent ID and receive its traffic. Keep `:8081` bound to `127.0.0.1`.
-- **No HTTP caller authentication.** Any client that knows a valid agent ID and service name can route requests through the edge. Add a bearer token check at the reverse proxy layer if needed.
-- **No rate limiting.** A malicious edge can flood an agent with requests; a malicious agent can exhaust edge goroutines.
-- **Response body size is unbounded.** Large backend responses are buffered fully in memory on both the agent and the edge.
-- **Single-value headers only.** Multi-value headers (e.g. multiple `Set-Cookie`) are collapsed to a comma-joined string.
+- [ ] agent authentication
+- [ ] HTTP caller authentication
+- [ ] rate limiting
+- [ ] unbounded response body size
+- [ ] multi-value header support
 
 ## Flags reference
 
