@@ -28,7 +28,9 @@ type TunnelMessage struct {
 	//	*TunnelMessage_Register
 	//	*TunnelMessage_RegisterAck
 	//	*TunnelMessage_ReqStart
+	//	*TunnelMessage_ReqBody
 	//	*TunnelMessage_ResStart
+	//	*TunnelMessage_ResBody
 	//	*TunnelMessage_Error
 	//	*TunnelMessage_Ping
 	//	*TunnelMessage_Pong
@@ -101,10 +103,28 @@ func (x *TunnelMessage) GetReqStart() *RequestStart {
 	return nil
 }
 
+func (x *TunnelMessage) GetReqBody() *RequestBodyChunk {
+	if x != nil {
+		if x, ok := x.Msg.(*TunnelMessage_ReqBody); ok {
+			return x.ReqBody
+		}
+	}
+	return nil
+}
+
 func (x *TunnelMessage) GetResStart() *ResponseStart {
 	if x != nil {
 		if x, ok := x.Msg.(*TunnelMessage_ResStart); ok {
 			return x.ResStart
+		}
+	}
+	return nil
+}
+
+func (x *TunnelMessage) GetResBody() *ResponseBodyChunk {
+	if x != nil {
+		if x, ok := x.Msg.(*TunnelMessage_ResBody); ok {
+			return x.ResBody
 		}
 	}
 	return nil
@@ -153,8 +173,16 @@ type TunnelMessage_ReqStart struct {
 	ReqStart *RequestStart `protobuf:"bytes,10,opt,name=req_start,json=reqStart,proto3,oneof"`
 }
 
+type TunnelMessage_ReqBody struct {
+	ReqBody *RequestBodyChunk `protobuf:"bytes,11,opt,name=req_body,json=reqBody,proto3,oneof"`
+}
+
 type TunnelMessage_ResStart struct {
 	ResStart *ResponseStart `protobuf:"bytes,20,opt,name=res_start,json=resStart,proto3,oneof"`
+}
+
+type TunnelMessage_ResBody struct {
+	ResBody *ResponseBodyChunk `protobuf:"bytes,21,opt,name=res_body,json=resBody,proto3,oneof"`
 }
 
 type TunnelMessage_Error struct {
@@ -175,7 +203,11 @@ func (*TunnelMessage_RegisterAck) isTunnelMessage_Msg() {}
 
 func (*TunnelMessage_ReqStart) isTunnelMessage_Msg() {}
 
+func (*TunnelMessage_ReqBody) isTunnelMessage_Msg() {}
+
 func (*TunnelMessage_ResStart) isTunnelMessage_Msg() {}
+
+func (*TunnelMessage_ResBody) isTunnelMessage_Msg() {}
 
 func (*TunnelMessage_Error) isTunnelMessage_Msg() {}
 
@@ -355,7 +387,6 @@ type RequestStart struct {
 	Method        string                 `protobuf:"bytes,4,opt,name=method,proto3" json:"method,omitempty"`
 	Path          string                 `protobuf:"bytes,5,opt,name=path,proto3" json:"path,omitempty"`
 	Headers       map[string]string      `protobuf:"bytes,6,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	Body          []byte                 `protobuf:"bytes,7,opt,name=body,proto3" json:"body,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -432,11 +463,64 @@ func (x *RequestStart) GetHeaders() map[string]string {
 	return nil
 }
 
-func (x *RequestStart) GetBody() []byte {
+type RequestBodyChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Data          []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	End           bool                   `protobuf:"varint,3,opt,name=end,proto3" json:"end,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestBodyChunk) Reset() {
+	*x = RequestBodyChunk{}
+	mi := &file_proto_tunnel_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestBodyChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestBodyChunk) ProtoMessage() {}
+
+func (x *RequestBodyChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_tunnel_proto_msgTypes[5]
 	if x != nil {
-		return x.Body
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestBodyChunk.ProtoReflect.Descriptor instead.
+func (*RequestBodyChunk) Descriptor() ([]byte, []int) {
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *RequestBodyChunk) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *RequestBodyChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
 	}
 	return nil
+}
+
+func (x *RequestBodyChunk) GetEnd() bool {
+	if x != nil {
+		return x.End
+	}
+	return false
 }
 
 type ResponseStart struct {
@@ -444,14 +528,13 @@ type ResponseStart struct {
 	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	Status        int32                  `protobuf:"varint,2,opt,name=status,proto3" json:"status,omitempty"`
 	Headers       map[string]string      `protobuf:"bytes,3,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	Body          []byte                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ResponseStart) Reset() {
 	*x = ResponseStart{}
-	mi := &file_proto_tunnel_proto_msgTypes[5]
+	mi := &file_proto_tunnel_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -463,7 +546,7 @@ func (x *ResponseStart) String() string {
 func (*ResponseStart) ProtoMessage() {}
 
 func (x *ResponseStart) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tunnel_proto_msgTypes[5]
+	mi := &file_proto_tunnel_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -476,7 +559,7 @@ func (x *ResponseStart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseStart.ProtoReflect.Descriptor instead.
 func (*ResponseStart) Descriptor() ([]byte, []int) {
-	return file_proto_tunnel_proto_rawDescGZIP(), []int{5}
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ResponseStart) GetRequestId() string {
@@ -500,11 +583,64 @@ func (x *ResponseStart) GetHeaders() map[string]string {
 	return nil
 }
 
-func (x *ResponseStart) GetBody() []byte {
+type ResponseBodyChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Data          []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	End           bool                   `protobuf:"varint,3,opt,name=end,proto3" json:"end,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResponseBodyChunk) Reset() {
+	*x = ResponseBodyChunk{}
+	mi := &file_proto_tunnel_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResponseBodyChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResponseBodyChunk) ProtoMessage() {}
+
+func (x *ResponseBodyChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_tunnel_proto_msgTypes[7]
 	if x != nil {
-		return x.Body
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResponseBodyChunk.ProtoReflect.Descriptor instead.
+func (*ResponseBodyChunk) Descriptor() ([]byte, []int) {
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ResponseBodyChunk) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *ResponseBodyChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
 	}
 	return nil
+}
+
+func (x *ResponseBodyChunk) GetEnd() bool {
+	if x != nil {
+		return x.End
+	}
+	return false
 }
 
 type Error struct {
@@ -518,7 +654,7 @@ type Error struct {
 
 func (x *Error) Reset() {
 	*x = Error{}
-	mi := &file_proto_tunnel_proto_msgTypes[6]
+	mi := &file_proto_tunnel_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -530,7 +666,7 @@ func (x *Error) String() string {
 func (*Error) ProtoMessage() {}
 
 func (x *Error) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tunnel_proto_msgTypes[6]
+	mi := &file_proto_tunnel_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -543,7 +679,7 @@ func (x *Error) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Error.ProtoReflect.Descriptor instead.
 func (*Error) Descriptor() ([]byte, []int) {
-	return file_proto_tunnel_proto_rawDescGZIP(), []int{6}
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Error) GetRequestId() string {
@@ -576,7 +712,7 @@ type Ping struct {
 
 func (x *Ping) Reset() {
 	*x = Ping{}
-	mi := &file_proto_tunnel_proto_msgTypes[7]
+	mi := &file_proto_tunnel_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -588,7 +724,7 @@ func (x *Ping) String() string {
 func (*Ping) ProtoMessage() {}
 
 func (x *Ping) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tunnel_proto_msgTypes[7]
+	mi := &file_proto_tunnel_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -601,7 +737,7 @@ func (x *Ping) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ping.ProtoReflect.Descriptor instead.
 func (*Ping) Descriptor() ([]byte, []int) {
-	return file_proto_tunnel_proto_rawDescGZIP(), []int{7}
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *Ping) GetTsUnixMs() int64 {
@@ -620,7 +756,7 @@ type Pong struct {
 
 func (x *Pong) Reset() {
 	*x = Pong{}
-	mi := &file_proto_tunnel_proto_msgTypes[8]
+	mi := &file_proto_tunnel_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -632,7 +768,7 @@ func (x *Pong) String() string {
 func (*Pong) ProtoMessage() {}
 
 func (x *Pong) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tunnel_proto_msgTypes[8]
+	mi := &file_proto_tunnel_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -645,7 +781,7 @@ func (x *Pong) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Pong.ProtoReflect.Descriptor instead.
 func (*Pong) Descriptor() ([]byte, []int) {
-	return file_proto_tunnel_proto_rawDescGZIP(), []int{8}
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Pong) GetTsUnixMs() int64 {
@@ -659,13 +795,15 @@ var File_proto_tunnel_proto protoreflect.FileDescriptor
 
 const file_proto_tunnel_proto_rawDesc = "" +
 	"\n" +
-	"\x12proto/tunnel.proto\x12\x0foutbound.tunnel\"\xa0\x03\n" +
+	"\x12proto/tunnel.proto\x12\x0foutbound.tunnel\"\xa1\x04\n" +
 	"\rTunnelMessage\x12>\n" +
 	"\bregister\x18\x01 \x01(\v2 .outbound.tunnel.RegisterRequestH\x00R\bregister\x12A\n" +
 	"\fregister_ack\x18\x02 \x01(\v2\x1c.outbound.tunnel.RegisterAckH\x00R\vregisterAck\x12<\n" +
 	"\treq_start\x18\n" +
-	" \x01(\v2\x1d.outbound.tunnel.RequestStartH\x00R\breqStart\x12=\n" +
-	"\tres_start\x18\x14 \x01(\v2\x1e.outbound.tunnel.ResponseStartH\x00R\bresStart\x12.\n" +
+	" \x01(\v2\x1d.outbound.tunnel.RequestStartH\x00R\breqStart\x12>\n" +
+	"\breq_body\x18\v \x01(\v2!.outbound.tunnel.RequestBodyChunkH\x00R\areqBody\x12=\n" +
+	"\tres_start\x18\x14 \x01(\v2\x1e.outbound.tunnel.ResponseStartH\x00R\bresStart\x12?\n" +
+	"\bres_body\x18\x15 \x01(\v2\".outbound.tunnel.ResponseBodyChunkH\x00R\aresBody\x12.\n" +
 	"\x05error\x18\x1e \x01(\v2\x16.outbound.tunnel.ErrorH\x00R\x05error\x12+\n" +
 	"\x04ping\x18( \x01(\v2\x15.outbound.tunnel.PingH\x00R\x04ping\x12+\n" +
 	"\x04pong\x18) \x01(\v2\x15.outbound.tunnel.PongH\x00R\x04pongB\x05\n" +
@@ -679,7 +817,7 @@ const file_proto_tunnel_proto_rawDesc = "" +
 	"\x04port\x18\x02 \x01(\rR\x04port\"7\n" +
 	"\vRegisterAck\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\xa4\x02\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\x90\x02\n" +
 	"\fRequestStart\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x19\n" +
@@ -687,20 +825,28 @@ const file_proto_tunnel_proto_rawDesc = "" +
 	"\aservice\x18\x03 \x01(\tR\aservice\x12\x16\n" +
 	"\x06method\x18\x04 \x01(\tR\x06method\x12\x12\n" +
 	"\x04path\x18\x05 \x01(\tR\x04path\x12D\n" +
-	"\aheaders\x18\x06 \x03(\v2*.outbound.tunnel.RequestStart.HeadersEntryR\aheaders\x12\x12\n" +
-	"\x04body\x18\a \x01(\fR\x04body\x1a:\n" +
+	"\aheaders\x18\x06 \x03(\v2*.outbound.tunnel.RequestStart.HeadersEntryR\aheaders\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdd\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"W\n" +
+	"\x10RequestBodyChunk\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\x12\x10\n" +
+	"\x03end\x18\x03 \x01(\bR\x03end\"\xc9\x01\n" +
 	"\rResponseStart\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\x05R\x06status\x12E\n" +
-	"\aheaders\x18\x03 \x03(\v2+.outbound.tunnel.ResponseStart.HeadersEntryR\aheaders\x12\x12\n" +
-	"\x04body\x18\x04 \x01(\fR\x04body\x1a:\n" +
+	"\aheaders\x18\x03 \x03(\v2+.outbound.tunnel.ResponseStart.HeadersEntryR\aheaders\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"T\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"X\n" +
+	"\x11ResponseBodyChunk\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\x12\x10\n" +
+	"\x03end\x18\x03 \x01(\bR\x03end\"T\n" +
 	"\x05Error\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
@@ -727,38 +873,42 @@ func file_proto_tunnel_proto_rawDescGZIP() []byte {
 	return file_proto_tunnel_proto_rawDescData
 }
 
-var file_proto_tunnel_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_proto_tunnel_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_proto_tunnel_proto_goTypes = []any{
-	(*TunnelMessage)(nil),   // 0: outbound.tunnel.TunnelMessage
-	(*RegisterRequest)(nil), // 1: outbound.tunnel.RegisterRequest
-	(*Service)(nil),         // 2: outbound.tunnel.Service
-	(*RegisterAck)(nil),     // 3: outbound.tunnel.RegisterAck
-	(*RequestStart)(nil),    // 4: outbound.tunnel.RequestStart
-	(*ResponseStart)(nil),   // 5: outbound.tunnel.ResponseStart
-	(*Error)(nil),           // 6: outbound.tunnel.Error
-	(*Ping)(nil),            // 7: outbound.tunnel.Ping
-	(*Pong)(nil),            // 8: outbound.tunnel.Pong
-	nil,                     // 9: outbound.tunnel.RequestStart.HeadersEntry
-	nil,                     // 10: outbound.tunnel.ResponseStart.HeadersEntry
+	(*TunnelMessage)(nil),     // 0: outbound.tunnel.TunnelMessage
+	(*RegisterRequest)(nil),   // 1: outbound.tunnel.RegisterRequest
+	(*Service)(nil),           // 2: outbound.tunnel.Service
+	(*RegisterAck)(nil),       // 3: outbound.tunnel.RegisterAck
+	(*RequestStart)(nil),      // 4: outbound.tunnel.RequestStart
+	(*RequestBodyChunk)(nil),  // 5: outbound.tunnel.RequestBodyChunk
+	(*ResponseStart)(nil),     // 6: outbound.tunnel.ResponseStart
+	(*ResponseBodyChunk)(nil), // 7: outbound.tunnel.ResponseBodyChunk
+	(*Error)(nil),             // 8: outbound.tunnel.Error
+	(*Ping)(nil),              // 9: outbound.tunnel.Ping
+	(*Pong)(nil),              // 10: outbound.tunnel.Pong
+	nil,                       // 11: outbound.tunnel.RequestStart.HeadersEntry
+	nil,                       // 12: outbound.tunnel.ResponseStart.HeadersEntry
 }
 var file_proto_tunnel_proto_depIdxs = []int32{
 	1,  // 0: outbound.tunnel.TunnelMessage.register:type_name -> outbound.tunnel.RegisterRequest
 	3,  // 1: outbound.tunnel.TunnelMessage.register_ack:type_name -> outbound.tunnel.RegisterAck
 	4,  // 2: outbound.tunnel.TunnelMessage.req_start:type_name -> outbound.tunnel.RequestStart
-	5,  // 3: outbound.tunnel.TunnelMessage.res_start:type_name -> outbound.tunnel.ResponseStart
-	6,  // 4: outbound.tunnel.TunnelMessage.error:type_name -> outbound.tunnel.Error
-	7,  // 5: outbound.tunnel.TunnelMessage.ping:type_name -> outbound.tunnel.Ping
-	8,  // 6: outbound.tunnel.TunnelMessage.pong:type_name -> outbound.tunnel.Pong
-	2,  // 7: outbound.tunnel.RegisterRequest.services:type_name -> outbound.tunnel.Service
-	9,  // 8: outbound.tunnel.RequestStart.headers:type_name -> outbound.tunnel.RequestStart.HeadersEntry
-	10, // 9: outbound.tunnel.ResponseStart.headers:type_name -> outbound.tunnel.ResponseStart.HeadersEntry
-	0,  // 10: outbound.tunnel.TunnelService.Connect:input_type -> outbound.tunnel.TunnelMessage
-	0,  // 11: outbound.tunnel.TunnelService.Connect:output_type -> outbound.tunnel.TunnelMessage
-	11, // [11:12] is the sub-list for method output_type
-	10, // [10:11] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	5,  // 3: outbound.tunnel.TunnelMessage.req_body:type_name -> outbound.tunnel.RequestBodyChunk
+	6,  // 4: outbound.tunnel.TunnelMessage.res_start:type_name -> outbound.tunnel.ResponseStart
+	7,  // 5: outbound.tunnel.TunnelMessage.res_body:type_name -> outbound.tunnel.ResponseBodyChunk
+	8,  // 6: outbound.tunnel.TunnelMessage.error:type_name -> outbound.tunnel.Error
+	9,  // 7: outbound.tunnel.TunnelMessage.ping:type_name -> outbound.tunnel.Ping
+	10, // 8: outbound.tunnel.TunnelMessage.pong:type_name -> outbound.tunnel.Pong
+	2,  // 9: outbound.tunnel.RegisterRequest.services:type_name -> outbound.tunnel.Service
+	11, // 10: outbound.tunnel.RequestStart.headers:type_name -> outbound.tunnel.RequestStart.HeadersEntry
+	12, // 11: outbound.tunnel.ResponseStart.headers:type_name -> outbound.tunnel.ResponseStart.HeadersEntry
+	0,  // 12: outbound.tunnel.TunnelService.Connect:input_type -> outbound.tunnel.TunnelMessage
+	0,  // 13: outbound.tunnel.TunnelService.Connect:output_type -> outbound.tunnel.TunnelMessage
+	13, // [13:14] is the sub-list for method output_type
+	12, // [12:13] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_proto_tunnel_proto_init() }
@@ -770,7 +920,9 @@ func file_proto_tunnel_proto_init() {
 		(*TunnelMessage_Register)(nil),
 		(*TunnelMessage_RegisterAck)(nil),
 		(*TunnelMessage_ReqStart)(nil),
+		(*TunnelMessage_ReqBody)(nil),
 		(*TunnelMessage_ResStart)(nil),
+		(*TunnelMessage_ResBody)(nil),
 		(*TunnelMessage_Error)(nil),
 		(*TunnelMessage_Ping)(nil),
 		(*TunnelMessage_Pong)(nil),
@@ -781,7 +933,7 @@ func file_proto_tunnel_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_tunnel_proto_rawDesc), len(file_proto_tunnel_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -14,6 +14,11 @@ import (
 	"time"
 )
 
+const (
+	streamChunkSize      = 64 * 1024
+	responseChunkBufSize = 16
+)
+
 // Session represents a single agent connection and its active request state.
 type Session struct {
 	agentID  string
@@ -29,7 +34,10 @@ type Session struct {
 
 // pendingResponse tracks the response for a single request id.
 type pendingResponse struct {
-	respCh chan *tunnelpb.ResponseStart
+	// headersCh receives exactly one ResponseStart per request_id.
+	headersCh chan *tunnelpb.ResponseStart
+	// bodyCh receives zero or more ResponseBodyChunk frames until End=true.
+	bodyCh chan *tunnelpb.ResponseBodyChunk
 	errCh  chan error
 }
 
@@ -99,7 +107,9 @@ func (s *Server) handleMessage(session *Session, msg *tunnelpb.TunnelMessage) {
 		ack := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_RegisterAck{RegisterAck: &tunnelpb.RegisterAck{Ok: true}}}
 		_ = s.send(session, ack)
 	case *tunnelpb.TunnelMessage_ResStart:
-		s.dispatchResponse(session, payload.ResStart)
+		s.dispatchResponseStart(session, payload.ResStart)
+	case *tunnelpb.TunnelMessage_ResBody:
+		s.dispatchResponseChunk(session, payload.ResBody)
 	case *tunnelpb.TunnelMessage_Error:
 		s.dispatchError(session, payload.Error)
 	case *tunnelpb.TunnelMessage_Ping:
@@ -158,21 +168,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create request id", http.StatusInternalServerError)
 		return
 	}
+	if r.ContentLength > s.config.MaxRequestBody {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
 
 	pending := s.newPending(session, requestID)
 	defer s.clearPending(session, requestID)
 
 	defer r.Body.Close()
-	limitedBody := io.LimitReader(r.Body, s.config.MaxRequestBody+1)
-	body, err := io.ReadAll(limitedBody)
-	if err != nil {
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
-		return
-	}
-	if int64(len(body)) > s.config.MaxRequestBody {
-		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		return
-	}
 
 	// Drop routing headers so the local service never sees them.
 	drop := map[string]struct{}{strings.ToLower(tunnel.HeaderAgent): {}, strings.ToLower(tunnel.HeaderService): {}}
@@ -183,30 +187,123 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Method:    r.Method,
 		Path:      r.URL.RequestURI(),
 		Headers:   tunnel.HeadersToMap(r.Header, drop),
-		Body:      body,
 	}}}
 	if err := s.send(session, start); err != nil {
 		http.Error(w, "agent send failed", http.StatusBadGateway)
 		return
 	}
+	if err := s.streamRequestBody(session, requestID, r.Body); err != nil {
+		var sizeErr *requestTooLargeError
+		if errors.As(err, &sizeErr) {
+			// Best-effort signal so the agent can stop any local work already
+			// started for this request before the edge returns 413.
+			_ = s.send(session, &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_Error{Error: &tunnelpb.Error{
+				RequestId: requestID,
+				Code:      http.StatusRequestEntityTooLarge,
+				Message:   "request body too large",
+			}}})
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		return
+	}
 
+	timer := time.NewTimer(s.config.RequestTimeout)
+	defer timer.Stop()
+
+	headersWritten := false
+	// Wait for response headers first so we can set status/headers exactly once
+	// before streaming response body chunks.
 	select {
-	case resp := <-pending.respCh:
+	case resp := <-pending.headersCh:
 		for key, value := range resp.Headers {
 			w.Header().Set(key, value)
 		}
 		w.WriteHeader(int(resp.Status))
-		if len(resp.Body) > 0 {
-			_, _ = w.Write(resp.Body)
-		}
+		headersWritten = true
 	case err := <-pending.errCh:
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
-	case <-time.After(s.config.RequestTimeout):
+	case <-timer.C:
 		http.Error(w, "agent response timeout", http.StatusGatewayTimeout)
 		return
 	case <-r.Context().Done():
 		return
+	}
+
+	for {
+		select {
+		case chunk := <-pending.bodyCh:
+			if len(chunk.Data) > 0 {
+				_, _ = w.Write(chunk.Data)
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
+			if chunk.End {
+				return
+			}
+		case err := <-pending.errCh:
+			if !headersWritten {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+			}
+			return
+		case <-timer.C:
+			// If headers are already sent, we cannot change status code at this point.
+			if !headersWritten {
+				http.Error(w, "agent response timeout", http.StatusGatewayTimeout)
+			}
+			return
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+type requestTooLargeError struct{}
+
+func (e *requestTooLargeError) Error() string {
+	return "request body too large"
+}
+
+func (s *Server) streamRequestBody(session *Session, requestID string, body io.Reader) error {
+	buf := make([]byte, streamChunkSize)
+	var total int64
+	for {
+		n, err := body.Read(buf)
+		if n > 0 {
+			total += int64(n)
+			if total > s.config.MaxRequestBody {
+				return &requestTooLargeError{}
+			}
+			msg := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_ReqBody{ReqBody: &tunnelpb.RequestBodyChunk{
+				RequestId: requestID,
+				Data:      append([]byte(nil), buf[:n]...),
+				End:       err == io.EOF,
+			}}}
+			if sendErr := s.send(session, msg); sendErr != nil {
+				return sendErr
+			}
+		}
+
+		if errors.Is(err, io.EOF) {
+			if n == 0 {
+				// Send a terminal empty chunk when the final read is EOF with no bytes.
+				// This keeps end-of-stream signaling explicit for the agent side.
+				msg := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_ReqBody{ReqBody: &tunnelpb.RequestBodyChunk{
+					RequestId: requestID,
+					End:       true,
+				}}}
+				if sendErr := s.send(session, msg); sendErr != nil {
+					return sendErr
+				}
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 	}
 }
 
@@ -219,8 +316,9 @@ func (s *Server) lookupSession(agentID string) *Session {
 
 func (s *Server) newPending(session *Session, requestID string) *pendingResponse {
 	pr := &pendingResponse{
-		respCh: make(chan *tunnelpb.ResponseStart, 1),
-		errCh:  make(chan error, 1),
+		headersCh: make(chan *tunnelpb.ResponseStart, 1),
+		bodyCh:    make(chan *tunnelpb.ResponseBodyChunk, responseChunkBufSize),
+		errCh:     make(chan error, 1),
 	}
 	session.mu.Lock()
 	session.responses[requestID] = pr
@@ -234,12 +332,20 @@ func (s *Server) clearPending(session *Session, requestID string) {
 	session.mu.Unlock()
 }
 
-func (s *Server) dispatchResponse(session *Session, resp *tunnelpb.ResponseStart) {
+func (s *Server) dispatchResponseStart(session *Session, resp *tunnelpb.ResponseStart) {
 	pr := s.getPending(session, resp.RequestId)
 	if pr == nil {
 		return
 	}
-	pr.respCh <- resp
+	pr.headersCh <- resp
+}
+
+func (s *Server) dispatchResponseChunk(session *Session, chunk *tunnelpb.ResponseBodyChunk) {
+	pr := s.getPending(session, chunk.RequestId)
+	if pr == nil {
+		return
+	}
+	pr.bodyCh <- chunk
 }
 
 func (s *Server) dispatchError(session *Session, errMsg *tunnelpb.Error) {

@@ -14,8 +14,10 @@ message TunnelMessage {
     RegisterAck register_ack = 2;
 
     RequestStart req_start = 10;
+    RequestBodyChunk req_body = 11;
 
     ResponseStart res_start = 20;
+    ResponseBodyChunk res_body = 21;
 
     Error error = 30;
     Ping ping = 40;
@@ -46,14 +48,24 @@ message RequestStart {
   string method = 4;
   string path = 5;
   map<string, string> headers = 6;
-  bytes body = 7;
+}
+
+message RequestBodyChunk {
+  string request_id = 1;
+  bytes data = 2;
+  bool end = 3;
 }
 
 message ResponseStart {
   string request_id = 1;
   int32 status = 2;
   map<string, string> headers = 3;
-  bytes body = 4;
+}
+
+message ResponseBodyChunk {
+  string request_id = 1;
+  bytes data = 2;
+  bool end = 3;
 }
 
 message Error {
