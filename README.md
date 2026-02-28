@@ -104,7 +104,6 @@ Keep both ports bound to `127.0.0.1` so only the proxy can reach them.
 | `--grpc-addr` | `:8081` | Address for the agent gRPC listener |
 | `--auth-secret` | _(none)_ | Shared secret required for agent registration; if unset all connections are accepted |
 | `--request-timeout` | `30s` | Timeout for proxied HTTP requests |
-| `--max-request-body` | `10MB` | Maximum request body size in bytes |
 | `--keepalive-interval` | `15s` | Interval between keepalive pings sent to agents |
 | `--keepalive-timeout` | `5s` | Time to wait for a pong before dropping the session |
 | `--shutdown-timeout` | `30s` | Graceful shutdown timeout |

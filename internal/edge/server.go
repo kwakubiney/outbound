@@ -19,6 +19,7 @@ import (
 const (
 	streamChunkSize      = 64 * 1024
 	responseChunkBufSize = 16
+	maxRequestBody       = 10 * 1024 * 1024
 )
 
 var streamBufPool = sync.Pool{
@@ -52,7 +53,6 @@ type pendingResponse struct {
 // ServerConfig holds configurable parameters for the edge server.
 type ServerConfig struct {
 	RequestTimeout    time.Duration
-	MaxRequestBody    int64
 	KeepaliveInterval time.Duration
 	KeepaliveTimeout  time.Duration
 	AuthSecret        string
@@ -72,9 +72,6 @@ func NewServer(config ServerConfig) *Server {
 	// Apply defaults
 	if config.RequestTimeout <= 0 {
 		config.RequestTimeout = 30 * time.Second
-	}
-	if config.MaxRequestBody <= 0 {
-		config.MaxRequestBody = 10 * 1024 * 1024 // 10MB
 	}
 	if config.KeepaliveInterval <= 0 {
 		config.KeepaliveInterval = 15 * time.Second
@@ -299,7 +296,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create request id", http.StatusInternalServerError)
 		return
 	}
-	if r.ContentLength > s.config.MaxRequestBody {
+	if r.ContentLength > maxRequestBody {
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
@@ -403,7 +400,7 @@ func (s *Server) streamRequestBody(session *Session, requestID string, requestBo
 		n, err := requestBody.Read(buf)
 		if n > 0 {
 			totalBytes += int64(n)
-			if totalBytes > s.config.MaxRequestBody {
+			if totalBytes > maxRequestBody {
 				return &requestBodyTooLargeError{}
 			}
 			msg := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_ReqBody{ReqBody: &tunnelpb.RequestBodyChunk{

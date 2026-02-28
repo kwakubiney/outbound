@@ -21,7 +21,6 @@ func main() {
 	httpAddr := flag.String("http-addr", ":8080", "HTTP listen address")
 	grpcAddr := flag.String("grpc-addr", ":8081", "gRPC listen address")
 	requestTimeout := flag.Duration("request-timeout", 30*time.Second, "Timeout for proxied HTTP requests")
-	maxRequestBody := flag.Int64("max-request-body", 10*1024*1024, "Maximum request body size in bytes (default 10MB)")
 	keepaliveInterval := flag.Duration("keepalive-interval", 15*time.Second, "Interval between edge keepalive pings to agents")
 	keepaliveTimeout := flag.Duration("keepalive-timeout", 5*time.Second, "Time to wait for agent pong before dropping session")
 	authSecret := flag.String("auth-secret", "", "Shared auth secret required for agent registration (empty disables auth)")
@@ -37,7 +36,6 @@ func main() {
 
 	server := edge.NewServer(edge.ServerConfig{
 		RequestTimeout:    *requestTimeout,
-		MaxRequestBody:    *maxRequestBody,
 		KeepaliveInterval: *keepaliveInterval,
 		KeepaliveTimeout:  *keepaliveTimeout,
 		AuthSecret:        *authSecret,
