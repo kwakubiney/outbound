@@ -20,6 +20,10 @@ const (
 	responseChunkBufSize = 16
 )
 
+var streamBufPool = sync.Pool{
+	New: func() any { b := make([]byte, streamChunkSize); return &b },
+}
+
 // Session represents a single agent connection and its active request state.
 type Session struct {
 	agentID  string
@@ -369,7 +373,9 @@ func (e *requestBodyTooLargeError) Error() string {
 }
 
 func (s *Server) streamRequestBody(session *Session, requestID string, requestBody io.Reader) error {
-	buf := make([]byte, streamChunkSize)
+	bufPtr := streamBufPool.Get().(*[]byte)
+	defer streamBufPool.Put(bufPtr)
+	buf := *bufPtr
 	var totalBytes int64
 	for {
 		n, err := requestBody.Read(buf)

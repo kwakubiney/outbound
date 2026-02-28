@@ -29,6 +29,10 @@ type inFlightRequest struct {
 
 const streamChunkSize = 64 * 1024
 
+var streamBufPool = sync.Pool{
+	New: func() any { b := make([]byte, streamChunkSize); return &b },
+}
+
 func NewClient(agentID string, services map[string]uint16) *Client {
 	return &Client{
 		agentID:  agentID,
@@ -205,7 +209,9 @@ func (c *Client) handleRequestBodyChunk(chunk *tunnelpb.RequestBodyChunk) {
 }
 
 func (c *Client) streamResponseBody(requestID string, body io.Reader) error {
-	buf := make([]byte, streamChunkSize)
+	bufPtr := streamBufPool.Get().(*[]byte)
+	defer streamBufPool.Put(bufPtr)
+	buf := *bufPtr
 	for {
 		n, err := body.Read(buf)
 		if n > 0 {
