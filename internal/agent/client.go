@@ -24,7 +24,7 @@ type Client struct {
 }
 
 type inFlightRequest struct {
-	bodyWriter *io.PipeWriter
+	requestBodyWriter *io.PipeWriter
 }
 
 const streamChunkSize = 64 * 1024
@@ -33,34 +33,46 @@ func NewClient(agentID string, services map[string]uint16) *Client {
 	return &Client{
 		agentID:  agentID,
 		services: services,
-		client:   &http.Client{Timeout: 30 * time.Second},
+		client: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConnsPerHost: 100,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
 	}
 }
 
 func (c *Client) Run(ctx context.Context, stream tunnelpb.TunnelService_ConnectClient) error {
 	c.stream = stream
-	//registers the services that this agent wants to expose
+	sessionCtx, cancel := context.WithCancel(ctx)
+	defer func() {
+		cancel()
+		c.failInFlight(errors.New("tunnel stream disconnected"))
+	}()
+
 	if err := c.register(); err != nil {
 		return err
 	}
 
-	//wait for the edge to acknowledge the registration before processing any requests. This ensures the agent doesn't miss any early incoming requests that arrive before the ack.
-	if err := c.awaitRegisterAck(); err != nil {
+	if err := c.waitForRegisterAck(); err != nil {
 		return err
 	}
 
-	//start looping to recv messages from the edge because we need to receive from e.
 	for {
 		msg, err := stream.Recv()
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
 			return err
 		}
 
 		switch payload := msg.Msg.(type) {
 		case *tunnelpb.TunnelMessage_ReqStart:
-			c.startRequest(ctx, payload.ReqStart)
+			c.handleRequestStart(sessionCtx, payload.ReqStart)
 		case *tunnelpb.TunnelMessage_ReqBody:
-			c.handleBodyChunk(payload.ReqBody)
+			c.handleRequestBodyChunk(payload.ReqBody)
 		case *tunnelpb.TunnelMessage_Error:
 			c.handleRemoteError(payload.Error)
 		case *tunnelpb.TunnelMessage_Ping:
@@ -70,7 +82,7 @@ func (c *Client) Run(ctx context.Context, stream tunnelpb.TunnelService_ConnectC
 	}
 }
 
-func (c *Client) awaitRegisterAck() error {
+func (c *Client) waitForRegisterAck() error {
 	for {
 		msg, err := c.stream.Recv()
 		if err != nil {
@@ -106,7 +118,7 @@ func (c *Client) register() error {
 	return c.send(msg)
 }
 
-func (c *Client) startRequest(ctx context.Context, req *tunnelpb.RequestStart) {
+func (c *Client) handleRequestStart(ctx context.Context, req *tunnelpb.RequestStart) {
 	port, ok := c.services[req.Service]
 	if !ok {
 		_ = c.send(&tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_Error{Error: &tunnelpb.Error{RequestId: req.RequestId, Code: 404, Message: "service not found"}}})
@@ -114,20 +126,20 @@ func (c *Client) startRequest(ctx context.Context, req *tunnelpb.RequestStart) {
 	}
 
 	bodyReader, bodyWriter := io.Pipe()
-	// Register in-flight state before spinning the worker goroutine so
-	// early req_body frames can be routed immediately without being dropped.
-	c.inFlight.Store(req.RequestId, &inFlightRequest{bodyWriter: bodyWriter})
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, req.Path)
-	go c.forwardRequest(ctx, req, url, bodyReader, bodyWriter)
+	// Store before launching the goroutine so early ReqBody frames always find
+	// their pipe writer.
+	c.inFlight.Store(req.RequestId, &inFlightRequest{requestBodyWriter: bodyWriter})
+	targetURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, req.Path)
+	go c.forwardRequest(ctx, req, targetURL, bodyReader, bodyWriter)
 }
 
-func (c *Client) forwardRequest(ctx context.Context, req *tunnelpb.RequestStart, url string, bodyReader *io.PipeReader, bodyWriter *io.PipeWriter) {
+func (c *Client) forwardRequest(ctx context.Context, req *tunnelpb.RequestStart, targetURL string, requestBodyReader *io.PipeReader, requestBodyWriter *io.PipeWriter) {
 	defer c.inFlight.Delete(req.RequestId)
-	defer bodyReader.Close()
+	defer requestBodyReader.Close()
 
-	httpReq, err := http.NewRequestWithContext(ctx, req.Method, url, bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, req.Method, targetURL, requestBodyReader)
 	if err != nil {
-		_ = bodyWriter.Close()
+		_ = requestBodyWriter.Close()
 		_ = c.send(&tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_Error{Error: &tunnelpb.Error{RequestId: req.RequestId, Code: 500, Message: "failed to create request"}}})
 		return
 	}
@@ -141,7 +153,7 @@ func (c *Client) forwardRequest(ctx context.Context, req *tunnelpb.RequestStart,
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		_ = bodyWriter.CloseWithError(err)
+		_ = requestBodyWriter.CloseWithError(err)
 		_ = c.send(&tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_Error{Error: &tunnelpb.Error{RequestId: req.RequestId, Code: 502, Message: "local request failed"}}})
 		return
 	}
@@ -164,32 +176,30 @@ func (c *Client) forwardRequest(ctx context.Context, req *tunnelpb.RequestStart,
 }
 
 func (c *Client) handleRemoteError(msg *tunnelpb.Error) {
-	v, ok := c.inFlight.Load(msg.RequestId)
+	value, ok := c.inFlight.Load(msg.RequestId)
 	if !ok {
 		return
 	}
-	state := v.(*inFlightRequest)
-	// Propagate edge-side aborts into the local HTTP request body reader.
-	_ = state.bodyWriter.CloseWithError(errors.New(msg.Message))
+	requestState := value.(*inFlightRequest)
+	_ = requestState.requestBodyWriter.CloseWithError(errors.New(msg.Message))
 	c.inFlight.Delete(msg.RequestId)
 }
 
-func (c *Client) handleBodyChunk(chunk *tunnelpb.RequestBodyChunk) {
-	v, ok := c.inFlight.Load(chunk.RequestId)
+func (c *Client) handleRequestBodyChunk(chunk *tunnelpb.RequestBodyChunk) {
+	value, ok := c.inFlight.Load(chunk.RequestId)
 	if !ok {
 		return
 	}
-	state := v.(*inFlightRequest)
+	requestState := value.(*inFlightRequest)
 	if len(chunk.Data) > 0 {
-		if _, err := state.bodyWriter.Write(chunk.Data); err != nil {
-			_ = state.bodyWriter.CloseWithError(err)
+		if _, err := requestState.requestBodyWriter.Write(chunk.Data); err != nil {
+			_ = requestState.requestBodyWriter.CloseWithError(err)
 			c.inFlight.Delete(chunk.RequestId)
 			return
 		}
 	}
 	if chunk.End {
-		// Closing the pipe signals EOF to the local service request body.
-		_ = state.bodyWriter.Close()
+		_ = requestState.requestBodyWriter.Close()
 		c.inFlight.Delete(chunk.RequestId)
 	}
 }
@@ -211,8 +221,7 @@ func (c *Client) streamResponseBody(requestID string, body io.Reader) error {
 
 		if errors.Is(err, io.EOF) {
 			if n == 0 {
-				// Send an explicit terminal frame so the edge can complete
-				// responses that end on an empty read.
+				// Explicit terminal frame for EOF-on-empty-read.
 				msg := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_ResBody{ResBody: &tunnelpb.ResponseBodyChunk{
 					RequestId: requestID,
 					End:       true,
@@ -245,4 +254,15 @@ func NormalizeServiceMap(entries map[string]uint16) map[string]uint16 {
 		clean[trimmed] = port
 	}
 	return clean
+}
+
+func (c *Client) failInFlight(err error) {
+	c.inFlight.Range(func(key, value any) bool {
+		state, ok := value.(*inFlightRequest)
+		if ok {
+			_ = state.requestBodyWriter.CloseWithError(err)
+		}
+		c.inFlight.Delete(key)
+		return true
+	})
 }

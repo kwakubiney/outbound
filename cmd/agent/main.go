@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"flag"
 	"log"
+	mrand "math/rand"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -20,11 +22,11 @@ func main() {
 	var services config.ServiceFlag
 	agentID := flag.String("id", "", "Agent identifier")
 	edgeAddr := flag.String("edge", "localhost:8081", "Edge gRPC address")
-	insecureConn := flag.Bool("insecure", false, "Disable TLS for the agent-to-edge gRPC connection (plain text)")
+	insecureMode := flag.Bool("insecure", false, "Disable TLS for the agent-to-edge gRPC connection (plain text)")
 	flag.Var(&services, "service", "Service mapping name=port (repeatable)")
 	flag.Parse()
 
-	if *insecureConn {
+	if *insecureMode {
 		log.Printf("WARNING: the connection from this agent to the edge is unencrypted plain gRPC. Ensure the agent-to-edge link is secured at the network level (VPN, private network, or a TLS-terminating reverse proxy on both ports) before transmitting sensitive data.")
 	}
 
@@ -40,8 +42,9 @@ func main() {
 	if len(services.Entries) == 0 {
 		log.Fatalf("at least one --service is required")
 	}
+	normalizedServices := agent.NormalizeServiceMap(services.Entries)
 
-	conn, err := grpc.NewClient(*edgeAddr, grpc.WithTransportCredentials(buildCredentials(*insecureConn)))
+	conn, err := grpc.NewClient(*edgeAddr, grpc.WithTransportCredentials(buildCredentials(*insecureMode)))
 	if err != nil {
 		log.Fatalf("failed to connect to edge: %v", err)
 	}
@@ -49,15 +52,34 @@ func main() {
 
 	client := tunnelpb.NewTunnelServiceClient(conn)
 	ctx := context.Background()
-	stream, err := client.Connect(ctx)
-	if err != nil {
-		log.Fatalf("failed to open tunnel stream: %v", err)
-	}
+	consecutiveFailures := 0
+	for {
+		stream, err := client.Connect(ctx)
+		if err != nil {
+			consecutiveFailures++
+			delay := reconnectDelay(consecutiveFailures)
+			log.Printf("failed to open tunnel stream: %v (retrying in %s)", err, delay)
+			time.Sleep(delay)
+			continue
+		}
 
-	agentClient := agent.NewClient(*agentID, agent.NormalizeServiceMap(services.Entries))
-	log.Printf("connected to edge %s", *edgeAddr)
-	if err := agentClient.Run(ctx, stream); err != nil {
-		log.Fatalf("agent stopped: %v", err)
+		agentClient := agent.NewClient(*agentID, normalizedServices)
+		if consecutiveFailures == 0 {
+			log.Printf("connected to edge %s", *edgeAddr)
+		} else {
+			log.Printf("reconnected to edge %s", *edgeAddr)
+		}
+
+		runErr := agentClient.Run(ctx, stream)
+
+		consecutiveFailures = 0
+
+		if runErr != nil {
+			consecutiveFailures++
+			delay := reconnectDelay(consecutiveFailures)
+			log.Printf("tunnel stream dropped: %v (reconnecting in %s)", runErr, delay)
+			time.Sleep(delay)
+		}
 	}
 }
 
@@ -74,4 +96,30 @@ func buildCredentials(insecureMode bool) credentials.TransportCredentials {
 		return insecure.NewCredentials()
 	}
 	return credentials.NewTLS(&tls.Config{})
+}
+
+func reconnectDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	const (
+		baseDelay   = time.Second
+		maxDelay    = 60 * time.Second
+		jitterRatio = 0.2
+	)
+
+	delay := baseDelay
+	for i := 1; i < attempt && delay < maxDelay; i++ {
+		delay *= 2
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+
+	jitterRange := int64(float64(delay) * jitterRatio)
+	if jitterRange == 0 {
+		return delay
+	}
+	jitter := time.Duration(mrand.Int63n((2 * jitterRange) + 1))
+	return delay + jitter - time.Duration(jitterRange)
 }
