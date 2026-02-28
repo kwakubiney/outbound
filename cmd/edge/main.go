@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,14 +24,23 @@ func main() {
 	maxRequestBody := flag.Int64("max-request-body", 10*1024*1024, "Maximum request body size in bytes (default 10MB)")
 	keepaliveInterval := flag.Duration("keepalive-interval", 15*time.Second, "Interval between edge keepalive pings to agents")
 	keepaliveTimeout := flag.Duration("keepalive-timeout", 5*time.Second, "Time to wait for agent pong before dropping session")
+	authSecret := flag.String("auth-secret", "", "Shared auth secret required for agent registration (empty disables auth)")
 	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second, "Graceful shutdown timeout")
 	flag.Parse()
+
+	if strings.TrimSpace(*authSecret) == "" {
+		*authSecret = envOr("OUTBOUND_AUTH_SECRET", "")
+	}
+	if *authSecret == "" {
+		log.Printf("WARNING: no --auth-secret configured; all agent connections accepted")
+	}
 
 	server := edge.NewServer(edge.ServerConfig{
 		RequestTimeout:    *requestTimeout,
 		MaxRequestBody:    *maxRequestBody,
 		KeepaliveInterval: *keepaliveInterval,
 		KeepaliveTimeout:  *keepaliveTimeout,
+		AuthSecret:        *authSecret,
 	})
 
 	grpcListener, err := net.Listen("tcp", *grpcAddr)
@@ -80,4 +90,11 @@ func main() {
 	}
 
 	log.Printf("shutdown complete")
+}
+
+func envOr(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
 }

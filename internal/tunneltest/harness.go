@@ -26,10 +26,13 @@ import (
 type HarnessOptions struct {
 	AgentID           string
 	ServiceName       string
+	AgentToken        string
+	AuthSecret        string
 	RequestTimeout    time.Duration
 	KeepaliveInterval time.Duration
 	KeepaliveTimeout  time.Duration
 	ReadyTimeout      time.Duration
+	SkipInitialReady  bool
 }
 
 type Harness struct {
@@ -103,6 +106,7 @@ func NewHarness(tb testing.TB, upstreamHandler http.HandlerFunc, options Harness
 		RequestTimeout:    options.RequestTimeout,
 		KeepaliveInterval: options.KeepaliveInterval,
 		KeepaliveTimeout:  options.KeepaliveTimeout,
+		AuthSecret:        options.AuthSecret,
 	})
 
 	h.bufListener = bufconn.Listen(1024 * 1024)
@@ -143,10 +147,12 @@ func NewHarness(tb testing.TB, upstreamHandler http.HandlerFunc, options Harness
 		edgeHost:   mustParseURL(tb, h.edgeURL).Host,
 	}
 
-	go h.runAgentLoop(tunnelpb.NewTunnelServiceClient(h.grpcConn), options.ServiceName, uint16(upstreamPort))
+	go h.runAgentLoop(tunnelpb.NewTunnelServiceClient(h.grpcConn), options.ServiceName, uint16(upstreamPort), options.AgentToken)
 
-	if err := h.WaitAgentReconnected(options.ReadyTimeout); err != nil {
-		tb.Fatalf("agent did not become ready: %v", err)
+	if !options.SkipInitialReady {
+		if err := h.WaitAgentReconnected(options.ReadyTimeout); err != nil {
+			tb.Fatalf("agent did not become ready: %v", err)
+		}
 	}
 
 	return h
@@ -241,7 +247,7 @@ func (h *Harness) WaitAgentReconnected(timeout time.Duration) error {
 	}
 }
 
-func (h *Harness) runAgentLoop(client tunnelpb.TunnelServiceClient, serviceName string, upstreamPort uint16) {
+func (h *Harness) runAgentLoop(client tunnelpb.TunnelServiceClient, serviceName string, upstreamPort uint16, agentToken string) {
 	defer close(h.agentDone)
 
 	services := map[string]uint16{serviceName: upstreamPort}
@@ -268,7 +274,7 @@ func (h *Harness) runAgentLoop(client tunnelpb.TunnelServiceClient, serviceName 
 			continue
 		}
 
-		agentClient := agent.NewClient(h.agentID, services)
+		agentClient := agent.NewClient(h.agentID, services, agentToken)
 		_ = agentClient.Run(attemptCtx, stream)
 		// Cancel the attempt context so the gRPC stream closes, which causes
 		// the edge to detach this session before the next attempt connects.

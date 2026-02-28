@@ -8,6 +8,8 @@ import (
 	"flag"
 	"log"
 	mrand "math/rand"
+	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -22,9 +24,14 @@ func main() {
 	var services config.ServiceFlag
 	agentID := flag.String("id", "", "Agent identifier")
 	edgeAddr := flag.String("edge", "localhost:8081", "Edge gRPC address")
+	token := flag.String("token", "", "Shared auth token for edge registration")
 	insecureMode := flag.Bool("insecure", false, "Disable TLS for the agent-to-edge gRPC connection (plain text)")
 	flag.Var(&services, "service", "Service mapping name=port (repeatable)")
 	flag.Parse()
+
+	if strings.TrimSpace(*token) == "" {
+		*token = strings.TrimSpace(os.Getenv("OUTBOUND_TOKEN"))
+	}
 
 	if *insecureMode {
 		log.Printf("WARNING: the connection from this agent to the edge is unencrypted plain gRPC. Ensure the agent-to-edge link is secured at the network level (VPN, private network, or a TLS-terminating reverse proxy on both ports) before transmitting sensitive data.")
@@ -51,6 +58,7 @@ func main() {
 	defer conn.Close()
 
 	client := tunnelpb.NewTunnelServiceClient(conn)
+	agentClient := agent.NewClient(*agentID, normalizedServices, *token)
 	ctx := context.Background()
 	consecutiveFailures := 0
 	for {
@@ -63,7 +71,6 @@ func main() {
 			continue
 		}
 
-		agentClient := agent.NewClient(*agentID, normalizedServices)
 		if consecutiveFailures == 0 {
 			log.Printf("connected to edge %s", *edgeAddr)
 		} else {
@@ -71,6 +78,10 @@ func main() {
 		}
 
 		runErr := agentClient.Run(ctx, stream)
+		if isUnauthorizedError(runErr) {
+			log.Printf("agent registration rejected: %v; update token and reconnect manually", runErr)
+			select {}
+		}
 
 		consecutiveFailures = 0
 
@@ -81,6 +92,13 @@ func main() {
 			time.Sleep(delay)
 		}
 	}
+}
+
+func isUnauthorizedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return err.Error() == "unauthorized"
 }
 
 func generateID() (string, error) {

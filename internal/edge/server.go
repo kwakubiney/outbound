@@ -2,6 +2,7 @@ package edge
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -54,6 +55,7 @@ type ServerConfig struct {
 	MaxRequestBody    int64
 	KeepaliveInterval time.Duration
 	KeepaliveTimeout  time.Duration
+	AuthSecret        string
 }
 
 // Server is the edge entry point that accepts HTTP and forwards over gRPC.
@@ -184,16 +186,35 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[tunnelpb.TunnelMessage,
 					clearPongDeadline()
 				}
 			default:
-				s.handleMessage(session, msg)
+				if err := s.handleMessage(session, msg); err != nil {
+					if errors.Is(err, errRegisterRejected) {
+						return nil
+					}
+					s.detachSession(session)
+					return err
+				}
 			}
 		}
 	}
 }
 
-func (s *Server) handleMessage(session *Session, msg *tunnelpb.TunnelMessage) {
+var errRegisterRejected = errors.New("register rejected")
+
+func (s *Server) handleMessage(session *Session, msg *tunnelpb.TunnelMessage) error {
 	switch payload := msg.Msg.(type) {
 	case *tunnelpb.TunnelMessage_Register:
 		req := payload.Register
+		if session.agentID != "" {
+			// Ignore duplicate RegisterRequest on an already-registered session.
+			return nil
+		}
+		if s.config.AuthSecret != "" && subtle.ConstantTimeCompare([]byte(req.GetToken()), []byte(s.config.AuthSecret)) != 1 {
+			ack := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_RegisterAck{RegisterAck: &tunnelpb.RegisterAck{Ok: false, Message: "unauthorized"}}}
+			if err := s.send(session, ack); err != nil {
+				return err
+			}
+			return errRegisterRejected
+		}
 		session.agentID = req.AgentId
 		services := map[string]uint16{}
 		for _, service := range req.Services {
@@ -202,7 +223,7 @@ func (s *Server) handleMessage(session *Session, msg *tunnelpb.TunnelMessage) {
 		session.services = services
 		s.attachSession(session)
 		ack := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_RegisterAck{RegisterAck: &tunnelpb.RegisterAck{Ok: true}}}
-		_ = s.send(session, ack)
+		return s.send(session, ack)
 	case *tunnelpb.TunnelMessage_ResStart:
 		s.dispatchResponseStart(session, payload.ResStart)
 	case *tunnelpb.TunnelMessage_ResBody:
@@ -210,6 +231,7 @@ func (s *Server) handleMessage(session *Session, msg *tunnelpb.TunnelMessage) {
 	case *tunnelpb.TunnelMessage_Error:
 		s.dispatchError(session, payload.Error)
 	}
+	return nil
 }
 
 func (s *Server) attachSession(session *Session) {

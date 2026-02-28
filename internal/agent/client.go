@@ -17,6 +17,7 @@ import (
 type Client struct {
 	agentID  string
 	services map[string]uint16
+	token    string
 	stream   tunnelpb.TunnelService_ConnectClient
 	client   *http.Client
 	sendMu   sync.Mutex
@@ -33,10 +34,11 @@ var streamBufPool = sync.Pool{
 	New: func() any { b := make([]byte, streamChunkSize); return &b },
 }
 
-func NewClient(agentID string, services map[string]uint16) *Client {
+func NewClient(agentID string, services map[string]uint16, token string) *Client {
 	return &Client{
 		agentID:  agentID,
 		services: services,
+		token:    token,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
@@ -118,6 +120,7 @@ func (c *Client) register() error {
 	msg := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_Register{Register: &tunnelpb.RegisterRequest{
 		AgentId:  c.agentID,
 		Services: services,
+		Token:    c.token,
 	}}}
 	return c.send(msg)
 }
