@@ -1,6 +1,6 @@
 # Outbound
 
-Outbound is a minimal HTTP tunneling system that exposes local services through a public edge server using a long-lived gRPC stream.
+Outbound is a HTTP tunneling system that exposes local services through a public edge server using a long-lived gRPC stream.
 
 ## How it works
 
