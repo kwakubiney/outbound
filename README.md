@@ -24,7 +24,7 @@ go build -o outbound-agent ./cmd/agent
 ### 2. Run the edge (on your public server)
 
 ```bash
-./outbound-edge --http-addr :8080 --grpc-addr :8081
+./outbound-edge --http-addr :8080 --grpc-addr :8081 --auth-secret mysecret
 ```
 
 ### 3. Run the agent (on your local machine)
@@ -35,13 +35,14 @@ Expose a local service running on port 3000 as the service named `web`:
 ./outbound-agent \
   --id my-machine \
   --service web=3000 \
+  --token mysecret \
   --edge edge.example.com:443
 ```
 
 Pass `--insecure` for local development when the edge has no TLS:
 
 ```bash
-./outbound-agent --id my-machine --service web=3000 --edge localhost:8081 --insecure
+./outbound-agent --id my-machine --service web=3000 --token mysecret --edge localhost:8081 --insecure
 ```
 
 ### 4. Make a request
@@ -93,14 +94,6 @@ edge.example.com {
 
 Keep both ports bound to `127.0.0.1` so only the proxy can reach them.
 
-## TODO
-
-- [ ] agent authentication
-- [ ] HTTP caller authentication
-- [ ] rate limiting
-- [ ] unbounded response body size
-- [ ] multi-value header support
-
 ## Flags reference
 
 ### edge
@@ -109,6 +102,12 @@ Keep both ports bound to `127.0.0.1` so only the proxy can reach them.
 |------|---------|-------------|
 | `--http-addr` | `:8080` | Address for the public HTTP listener |
 | `--grpc-addr` | `:8081` | Address for the agent gRPC listener |
+| `--auth-secret` | _(none)_ | Shared secret required for agent registration; if unset all connections are accepted |
+| `--request-timeout` | `30s` | Timeout for proxied HTTP requests |
+| `--max-request-body` | `10MB` | Maximum request body size in bytes |
+| `--keepalive-interval` | `15s` | Interval between keepalive pings sent to agents |
+| `--keepalive-timeout` | `5s` | Time to wait for a pong before dropping the session |
+| `--shutdown-timeout` | `30s` | Graceful shutdown timeout |
 
 ### agent
 
@@ -116,5 +115,6 @@ Keep both ports bound to `127.0.0.1` so only the proxy can reach them.
 |------|---------|-------------|
 | `--id` | _(auto-generated)_ | Agent identifier |
 | `--edge` | `localhost:8081` | Edge address (`host:port`) |
+| `--token` | _(none)_ | Shared auth token for edge registration |
 | `--service` | _(required, repeatable)_ | Service mapping `name=port` |
 | `--insecure` | `false` | Disable TLS on the gRPC connection (local dev only) |
