@@ -21,12 +21,16 @@ func main() {
 	grpcAddr := flag.String("grpc-addr", ":8081", "gRPC listen address")
 	requestTimeout := flag.Duration("request-timeout", 30*time.Second, "Timeout for proxied HTTP requests")
 	maxRequestBody := flag.Int64("max-request-body", 10*1024*1024, "Maximum request body size in bytes (default 10MB)")
+	keepaliveInterval := flag.Duration("keepalive-interval", 15*time.Second, "Interval between edge keepalive pings to agents")
+	keepaliveTimeout := flag.Duration("keepalive-timeout", 5*time.Second, "Time to wait for agent pong before dropping session")
 	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second, "Graceful shutdown timeout")
 	flag.Parse()
 
 	server := edge.NewServer(edge.ServerConfig{
-		RequestTimeout: *requestTimeout,
-		MaxRequestBody: *maxRequestBody,
+		RequestTimeout:    *requestTimeout,
+		MaxRequestBody:    *maxRequestBody,
+		KeepaliveInterval: *keepaliveInterval,
+		KeepaliveTimeout:  *keepaliveTimeout,
 	})
 
 	grpcListener, err := net.Listen("tcp", *grpcAddr)
@@ -37,7 +41,6 @@ func main() {
 	grpcServer := grpc.NewServer()
 	tunnelpb.RegisterTunnelServiceServer(grpcServer, server)
 
-	// Start gRPC server in background
 	go func() {
 		log.Printf("gRPC listening on %s", *grpcAddr)
 		if err := grpcServer.Serve(grpcListener); err != nil {
@@ -52,7 +55,6 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	// Start HTTP server in background
 	go func() {
 		log.Printf("HTTP listening on %s", *httpAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -60,21 +62,17 @@ func main() {
 		}
 	}()
 
-	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	log.Printf("received signal %v, initiating graceful shutdown...", sig)
 
-	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), *shutdownTimeout)
 	defer cancel()
 
-	// Stop accepting new gRPC connections, finish existing ones
 	grpcServer.GracefulStop()
 	log.Printf("gRPC server stopped")
 
-	// Stop accepting new HTTP connections, finish existing ones
 	if err := httpServer.Shutdown(ctx); err != nil {
 		log.Printf("HTTP server shutdown error: %v", err)
 	} else {

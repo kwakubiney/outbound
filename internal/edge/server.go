@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"google.golang.org/grpc"
 	"io"
 	"net/http"
 	"outbound/internal/tunnel"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"google.golang.org/grpc"
 )
 
 const (
@@ -28,23 +29,27 @@ type Session struct {
 	// sendMu ensures messages on the gRPC stream do not interleave.
 	sendMu sync.Mutex
 
-	mu        sync.Mutex
-	responses map[string]*pendingResponse
+	pendingMu        sync.Mutex
+	pendingResponses map[string]*pendingResponse
 }
 
 // pendingResponse tracks the response for a single request id.
 type pendingResponse struct {
-	// headersCh receives exactly one ResponseStart per request_id.
-	headersCh chan *tunnelpb.ResponseStart
-	// bodyCh receives zero or more ResponseBodyChunk frames until End=true.
-	bodyCh chan *tunnelpb.ResponseBodyChunk
-	errCh  chan error
+	// startCh receives exactly one ResponseStart per request_id.
+	startCh chan *tunnelpb.ResponseStart
+	// chunkCh receives zero or more ResponseBodyChunk frames until End=true.
+	chunkCh chan *tunnelpb.ResponseBodyChunk
+	failCh  chan error
+	doneCtx context.Context
+	stop    context.CancelFunc
 }
 
 // ServerConfig holds configurable parameters for the edge server.
 type ServerConfig struct {
-	RequestTimeout time.Duration
-	MaxRequestBody int64
+	RequestTimeout    time.Duration
+	MaxRequestBody    int64
+	KeepaliveInterval time.Duration
+	KeepaliveTimeout  time.Duration
 }
 
 // Server is the edge entry point that accepts HTTP and forwards over gRPC.
@@ -65,6 +70,12 @@ func NewServer(config ServerConfig) *Server {
 	if config.MaxRequestBody <= 0 {
 		config.MaxRequestBody = 10 * 1024 * 1024 // 10MB
 	}
+	if config.KeepaliveInterval <= 0 {
+		config.KeepaliveInterval = 15 * time.Second
+	}
+	if config.KeepaliveTimeout <= 0 {
+		config.KeepaliveTimeout = 5 * time.Second
+	}
 	return &Server{
 		config:   config,
 		sessions: make(map[string]*Session),
@@ -74,22 +85,104 @@ func NewServer(config ServerConfig) *Server {
 // Connect handles a single bidirectional tunnel connection from an agent.
 func (s *Server) Connect(stream grpc.BidiStreamingServer[tunnelpb.TunnelMessage, tunnelpb.TunnelMessage]) error {
 	session := &Session{
-		services:  map[string]uint16{},
-		stream:    stream,
-		responses: make(map[string]*pendingResponse),
+		services:         map[string]uint16{},
+		stream:           stream,
+		pendingResponses: make(map[string]*pendingResponse),
 	}
+	inboundMsgCh := make(chan *tunnelpb.TunnelMessage, 1)
+	recvErrCh := make(chan error, 1)
+	go func() {
+		// Keep stream.Recv isolated in its own goroutine so keepalive and dispatch
+		// never block behind a slow or stalled Recv call.
+		for {
+			msg, err := stream.Recv()
+			if err != nil {
+				select {
+				case recvErrCh <- err:
+				default:
+				}
+				return
+			}
+			select {
+			case inboundMsgCh <- msg:
+			case <-stream.Context().Done():
+				return
+			}
+		}
+	}()
+
+	keepaliveTicker := time.NewTicker(s.config.KeepaliveInterval)
+	defer keepaliveTicker.Stop()
+
+	var (
+		waitingForPong     bool
+		lastPingTimestamp  int64
+		pongTimer          *time.Timer
+		pongDeadlineSignal <-chan time.Time
+	)
+
+	clearPongDeadline := func() {
+		if pongTimer == nil {
+			pongDeadlineSignal = nil
+			return
+		}
+		// Stop+drain prevents a stale timer event from firing after Reset.
+		if !pongTimer.Stop() {
+			select {
+			case <-pongTimer.C:
+			default:
+			}
+		}
+		pongDeadlineSignal = nil
+	}
+	defer clearPongDeadline()
 
 	for {
-		msg, err := stream.Recv()
-		if err != nil {
+		select {
+		case err := <-recvErrCh:
 			s.detachSession(session)
 			if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err
+		case <-keepaliveTicker.C:
+			if session.agentID == "" || waitingForPong {
+				continue
+			}
+			now := time.Now().UnixMilli()
+			ping := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_Ping{Ping: &tunnelpb.Ping{TsUnixMs: now}}}
+			if err := s.send(session, ping); err != nil {
+				s.detachSession(session)
+				return err
+			}
+			lastPingTimestamp = now
+			waitingForPong = true
+			if pongTimer == nil {
+				pongTimer = time.NewTimer(s.config.KeepaliveTimeout)
+			} else {
+				if !pongTimer.Stop() {
+					select {
+					case <-pongTimer.C:
+					default:
+					}
+				}
+				pongTimer.Reset(s.config.KeepaliveTimeout)
+			}
+			pongDeadlineSignal = pongTimer.C
+		case <-pongDeadlineSignal:
+			s.detachSession(session)
+			return errors.New("keepalive timeout waiting for pong")
+		case msg := <-inboundMsgCh:
+			switch payload := msg.Msg.(type) {
+			case *tunnelpb.TunnelMessage_Pong:
+				if waitingForPong && payload.Pong.GetTsUnixMs() == lastPingTimestamp {
+					waitingForPong = false
+					clearPongDeadline()
+				}
+			default:
+				s.handleMessage(session, msg)
+			}
 		}
-
-		s.handleMessage(session, msg)
 	}
 }
 
@@ -112,9 +205,6 @@ func (s *Server) handleMessage(session *Session, msg *tunnelpb.TunnelMessage) {
 		s.dispatchResponseChunk(session, payload.ResBody)
 	case *tunnelpb.TunnelMessage_Error:
 		s.dispatchError(session, payload.Error)
-	case *tunnelpb.TunnelMessage_Ping:
-		pong := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_Pong{Pong: &tunnelpb.Pong{TsUnixMs: payload.Ping.TsUnixMs}}}
-		_ = s.send(session, pong)
 	}
 }
 
@@ -136,6 +226,21 @@ func (s *Server) detachSession(session *Session) {
 		delete(s.sessions, session.agentID)
 	}
 	s.sessionsMu.Unlock()
+
+	// Fail all pending responses immediately so in-flight HTTP handlers get a
+	// 502 rather than hanging until RequestTimeout fires.
+	session.pendingMu.Lock()
+	pending := session.pendingResponses
+	session.pendingResponses = make(map[string]*pendingResponse)
+	session.pendingMu.Unlock()
+
+	for _, p := range pending {
+		p.stop()
+		select {
+		case p.failCh <- errors.New("agent disconnected"):
+		default:
+		}
+	}
 }
 
 func (s *Server) send(session *Session, msg *tunnelpb.TunnelMessage) error {
@@ -173,27 +278,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pending := s.newPending(session, requestID)
-	defer s.clearPending(session, requestID)
+	pending := s.createPendingResponse(session, requestID)
+	defer s.removePendingResponse(session, requestID)
 
 	defer r.Body.Close()
 
-	// Drop routing headers so the local service never sees them.
-	drop := map[string]struct{}{strings.ToLower(tunnel.HeaderAgent): {}, strings.ToLower(tunnel.HeaderService): {}}
-	start := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_ReqStart{ReqStart: &tunnelpb.RequestStart{
+	droppedHeaders := map[string]struct{}{strings.ToLower(tunnel.HeaderAgent): {}, strings.ToLower(tunnel.HeaderService): {}}
+	requestStartMsg := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_ReqStart{ReqStart: &tunnelpb.RequestStart{
 		RequestId: requestID,
 		AgentId:   agentID,
 		Service:   service,
 		Method:    r.Method,
 		Path:      r.URL.RequestURI(),
-		Headers:   tunnel.HeadersToMap(r.Header, drop),
+		Headers:   tunnel.HeadersToMap(r.Header, droppedHeaders),
 	}}}
-	if err := s.send(session, start); err != nil {
+	if err := s.send(session, requestStartMsg); err != nil {
 		http.Error(w, "agent send failed", http.StatusBadGateway)
 		return
 	}
 	if err := s.streamRequestBody(session, requestID, r.Body); err != nil {
-		var sizeErr *requestTooLargeError
+		var sizeErr *requestBodyTooLargeError
 		if errors.As(err, &sizeErr) {
 			// Best-effort signal so the agent can stop any local work already
 			// started for this request before the edge returns 413.
@@ -209,23 +313,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	timer := time.NewTimer(s.config.RequestTimeout)
-	defer timer.Stop()
+	requestTimeoutTimer := time.NewTimer(s.config.RequestTimeout)
+	defer requestTimeoutTimer.Stop()
 
 	headersWritten := false
-	// Wait for response headers first so we can set status/headers exactly once
-	// before streaming response body chunks.
 	select {
-	case resp := <-pending.headersCh:
+	case resp := <-pending.startCh:
 		for key, value := range resp.Headers {
 			w.Header().Set(key, value)
 		}
 		w.WriteHeader(int(resp.Status))
 		headersWritten = true
-	case err := <-pending.errCh:
+	case err := <-pending.failCh:
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
-	case <-timer.C:
+	case <-requestTimeoutTimer.C:
 		http.Error(w, "agent response timeout", http.StatusGatewayTimeout)
 		return
 	case <-r.Context().Done():
@@ -234,7 +336,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case chunk := <-pending.bodyCh:
+		case chunk := <-pending.chunkCh:
 			if len(chunk.Data) > 0 {
 				_, _ = w.Write(chunk.Data)
 				if flusher, ok := w.(http.Flusher); ok {
@@ -244,13 +346,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if chunk.End {
 				return
 			}
-		case err := <-pending.errCh:
+		case err := <-pending.failCh:
 			if !headersWritten {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 			}
 			return
-		case <-timer.C:
-			// If headers are already sent, we cannot change status code at this point.
+		case <-requestTimeoutTimer.C:
 			if !headersWritten {
 				http.Error(w, "agent response timeout", http.StatusGatewayTimeout)
 			}
@@ -261,21 +362,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type requestTooLargeError struct{}
+type requestBodyTooLargeError struct{}
 
-func (e *requestTooLargeError) Error() string {
+func (e *requestBodyTooLargeError) Error() string {
 	return "request body too large"
 }
 
-func (s *Server) streamRequestBody(session *Session, requestID string, body io.Reader) error {
+func (s *Server) streamRequestBody(session *Session, requestID string, requestBody io.Reader) error {
 	buf := make([]byte, streamChunkSize)
-	var total int64
+	var totalBytes int64
 	for {
-		n, err := body.Read(buf)
+		n, err := requestBody.Read(buf)
 		if n > 0 {
-			total += int64(n)
-			if total > s.config.MaxRequestBody {
-				return &requestTooLargeError{}
+			totalBytes += int64(n)
+			if totalBytes > s.config.MaxRequestBody {
+				return &requestBodyTooLargeError{}
 			}
 			msg := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_ReqBody{ReqBody: &tunnelpb.RequestBodyChunk{
 				RequestId: requestID,
@@ -289,8 +390,7 @@ func (s *Server) streamRequestBody(session *Session, requestID string, body io.R
 
 		if errors.Is(err, io.EOF) {
 			if n == 0 {
-				// Send a terminal empty chunk when the final read is EOF with no bytes.
-				// This keeps end-of-stream signaling explicit for the agent side.
+				// Explicit terminal frame for EOF-on-empty-read.
 				msg := &tunnelpb.TunnelMessage{Msg: &tunnelpb.TunnelMessage_ReqBody{ReqBody: &tunnelpb.RequestBodyChunk{
 					RequestId: requestID,
 					End:       true,
@@ -314,51 +414,86 @@ func (s *Server) lookupSession(agentID string) *Session {
 	return session
 }
 
-func (s *Server) newPending(session *Session, requestID string) *pendingResponse {
-	pr := &pendingResponse{
-		headersCh: make(chan *tunnelpb.ResponseStart, 1),
-		bodyCh:    make(chan *tunnelpb.ResponseBodyChunk, responseChunkBufSize),
-		errCh:     make(chan error, 1),
+func (s *Server) createPendingResponse(session *Session, requestID string) *pendingResponse {
+	doneCtx, stop := context.WithCancel(context.Background())
+	pending := &pendingResponse{
+		startCh: make(chan *tunnelpb.ResponseStart, 1),
+		chunkCh: make(chan *tunnelpb.ResponseBodyChunk, responseChunkBufSize),
+		failCh:  make(chan error, 1),
+		doneCtx: doneCtx,
+		stop:    stop,
 	}
-	session.mu.Lock()
-	session.responses[requestID] = pr
-	session.mu.Unlock()
-	return pr
+	session.pendingMu.Lock()
+	session.pendingResponses[requestID] = pending
+	session.pendingMu.Unlock()
+	return pending
 }
 
-func (s *Server) clearPending(session *Session, requestID string) {
-	session.mu.Lock()
-	delete(session.responses, requestID)
-	session.mu.Unlock()
+func (s *Server) removePendingResponse(session *Session, requestID string) {
+	session.pendingMu.Lock()
+	pending := session.pendingResponses[requestID]
+	delete(session.pendingResponses, requestID)
+	session.pendingMu.Unlock()
+	if pending != nil {
+		pending.stop()
+	}
 }
 
 func (s *Server) dispatchResponseStart(session *Session, resp *tunnelpb.ResponseStart) {
-	pr := s.getPending(session, resp.RequestId)
-	if pr == nil {
+	pending := s.lookupPendingResponse(session, resp.RequestId)
+	if pending == nil {
 		return
 	}
-	pr.headersCh <- resp
+	select {
+	case pending.startCh <- resp:
+	case <-pending.doneCtx.Done():
+	default:
+	}
 }
 
 func (s *Server) dispatchResponseChunk(session *Session, chunk *tunnelpb.ResponseBodyChunk) {
-	pr := s.getPending(session, chunk.RequestId)
-	if pr == nil {
+	session.pendingMu.Lock()
+	pending := session.pendingResponses[chunk.RequestId]
+	if pending == nil {
+		session.pendingMu.Unlock()
 		return
 	}
-	pr.bodyCh <- chunk
+	// Keep lookup + overflow handling atomic under pendingMu so a concurrent
+	// remove path cannot race this dispatch.
+	select {
+	case pending.chunkCh <- chunk:
+		session.pendingMu.Unlock()
+		return
+	case <-pending.doneCtx.Done():
+		session.pendingMu.Unlock()
+		return
+	default:
+	}
+	// Buffer full: remove under lock, then signal outside lock.
+	delete(session.pendingResponses, chunk.RequestId)
+	session.pendingMu.Unlock()
+	pending.stop()
+	select {
+	case pending.failCh <- errors.New("response buffer overflow"):
+	default:
+	}
 }
 
 func (s *Server) dispatchError(session *Session, errMsg *tunnelpb.Error) {
-	pr := s.getPending(session, errMsg.RequestId)
-	if pr == nil {
+	pending := s.lookupPendingResponse(session, errMsg.RequestId)
+	if pending == nil {
 		return
 	}
-	pr.errCh <- fmt.Errorf("agent error: %s", errMsg.Message)
+	select {
+	case pending.failCh <- fmt.Errorf("agent error: %s", errMsg.Message):
+	case <-pending.doneCtx.Done():
+	default:
+	}
 }
 
-func (s *Server) getPending(session *Session, requestID string) *pendingResponse {
-	session.mu.Lock()
-	pr := session.responses[requestID]
-	session.mu.Unlock()
-	return pr
+func (s *Server) lookupPendingResponse(session *Session, requestID string) *pendingResponse {
+	session.pendingMu.Lock()
+	pending := session.pendingResponses[requestID]
+	session.pendingMu.Unlock()
+	return pending
 }
