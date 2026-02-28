@@ -2,3 +2,10 @@
 outbound-agent
 outbound-agent-linux
 outbound-edge-linux
+/agent
+/demo
+/outbound-edge
+.DS_Store
+
+# Research docs (review before committing)
+docs/research/
