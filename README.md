@@ -24,7 +24,7 @@ go build -o outbound-agent ./cmd/agent
 ### 2. Run the edge (on your public server)
 
 ```bash
-./outbound-edge --http-addr :8080 --grpc-addr :8081 --auth-secret mysecret
+./outbound-edge --addr :8080 --auth-secret mysecret
 ```
 
 ### 3. Run the agent (on your local machine)
@@ -42,7 +42,7 @@ Expose a local service running on port 3000 as the service named `web`:
 Pass `--insecure` for local development when the edge has no TLS:
 
 ```bash
-./outbound-agent --id my-machine --service web=3000 --token mysecret --edge localhost:8081 --insecure
+./outbound-agent --id my-machine --service web=3000 --token mysecret --edge localhost:8080 --insecure
 ```
 
 ### 4. Make a request
@@ -72,27 +72,23 @@ curl -H "X-Outbound-Agent: my-machine" -H "X-Outbound-Service: metrics" https://
 
 ## HTTPS and custom domains
 
-TLS is not handled inside the edge binary. Put Caddy (or any reverse proxy) in front of the edge and terminate TLS there. The proxy forwards HTTP traffic to `:8080` and gRPC traffic to `:8081`.
+TLS is not handled inside the edge binary. Put Caddy (or any reverse proxy) in front of the edge and terminate TLS there. The edge listens on a single port and demultiplexes HTTP and gRPC traffic automatically.
 
 ```
 [HTTP client]  ─── HTTPS (443)    ───┐
-                                     [Caddy] ─── plain HTTP  ──▶ edge :8080
-[agent]        ─── gRPC+TLS (443) ───┘        ─── plain gRPC ──▶ edge :8081
+                                     [Caddy] ─── plain HTTP+gRPC ──▶ edge :8080
+[agent]        ─── gRPC+TLS (443) ───┘
 ```
 
 ### Caddy
 
 ```caddy
 edge.example.com {
-    @grpc {
-        header Content-Type application/grpc*
-    }
-    reverse_proxy @grpc h2c://127.0.0.1:8081
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy h2c://127.0.0.1:8080
 }
 ```
 
-Keep both ports bound to `127.0.0.1` so only the proxy can reach them.
+Keep the port bound to `127.0.0.1` so only the proxy can reach it.
 
 ## Flags reference
 
@@ -100,8 +96,7 @@ Keep both ports bound to `127.0.0.1` so only the proxy can reach them.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--http-addr` | `:8080` | Address for the public HTTP listener |
-| `--grpc-addr` | `:8081` | Address for the agent gRPC listener |
+| `--addr` | `:8080` | Listen address for both HTTP and gRPC (demultiplexed via cmux) |
 | `--auth-secret` | _(none)_ | Shared secret required for agent registration; if unset all connections are accepted |
 | `--request-timeout` | `30s` | Timeout for proxied HTTP requests |
 | `--keepalive-interval` | `15s` | Interval between keepalive pings sent to agents |

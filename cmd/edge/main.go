@@ -41,14 +41,14 @@ func main() {
 		AuthSecret:        *authSecret,
 	})
 
-	lis, err := net.Listen("tcp", *addr)
+	listener, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatalf("failed to listen on %s: %v", *addr, err)
 	}
 
-	mux := cmux.New(lis)
-	grpcLis := mux.MatchWithWriters(cmux.HTTP2MatchHeaderFieldSendSettings("content-type", "application/grpc"))
-	httpLis := mux.Match(cmux.Any())
+	mux := cmux.New(listener)
+	grpcListener := mux.MatchWithWriters(cmux.HTTP2MatchHeaderFieldSendSettings("content-type", "application/grpc"))
+	httpListener := mux.Match(cmux.Any())
 
 	grpcServer := grpc.NewServer()
 	tunnelpb.RegisterTunnelServiceServer(grpcServer, server)
@@ -61,14 +61,14 @@ func main() {
 
 	go func() {
 		log.Printf("gRPC listening on %s", *addr)
-		if err := grpcServer.Serve(grpcLis); err != nil {
+		if err := grpcServer.Serve(grpcListener); err != nil {
 			log.Printf("gRPC server stopped: %v", err)
 		}
 	}()
 
 	go func() {
 		log.Printf("HTTP listening on %s", *addr)
-		if err := httpServer.Serve(httpLis); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.Serve(httpListener); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP server stopped: %v", err)
 		}
 	}()
