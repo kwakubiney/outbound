@@ -1,6 +1,6 @@
 module outbound
 
-go 1.24.0
+go 1.26.0
 
 require (
 	google.golang.org/grpc v1.79.1
@@ -8,6 +8,7 @@ require (
 )
 
 require (
+	github.com/soheilhy/cmux v0.1.5 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
