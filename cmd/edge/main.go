@@ -12,14 +12,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/soheilhy/cmux"
 	"google.golang.org/grpc"
 	"outbound/internal/edge"
 	tunnelpb "outbound/proto"
 )
 
 func main() {
-	httpAddr := flag.String("http-addr", ":8080", "HTTP listen address")
-	grpcAddr := flag.String("grpc-addr", ":8081", "gRPC listen address")
+	addr := flag.String("addr", ":8080", "Listen address for both HTTP and gRPC")
 	requestTimeout := flag.Duration("request-timeout", 30*time.Second, "Timeout for proxied HTTP requests")
 	keepaliveInterval := flag.Duration("keepalive-interval", 15*time.Second, "Interval between edge keepalive pings to agents")
 	keepaliveTimeout := flag.Duration("keepalive-timeout", 5*time.Second, "Time to wait for agent pong before dropping session")
@@ -41,32 +41,41 @@ func main() {
 		AuthSecret:        *authSecret,
 	})
 
-	grpcListener, err := net.Listen("tcp", *grpcAddr)
+	listener, err := net.Listen("tcp", *addr)
 	if err != nil {
-		log.Fatalf("failed to listen on gRPC addr: %v", err)
+		log.Fatalf("failed to listen on %s: %v", *addr, err)
 	}
+
+	mux := cmux.New(listener)
+	grpcListener := mux.MatchWithWriters(cmux.HTTP2MatchHeaderFieldSendSettings("content-type", "application/grpc"))
+	httpListener := mux.Match(cmux.Any())
 
 	grpcServer := grpc.NewServer()
 	tunnelpb.RegisterTunnelServiceServer(grpcServer, server)
 
-	go func() {
-		log.Printf("gRPC listening on %s", *grpcAddr)
-		if err := grpcServer.Serve(grpcListener); err != nil {
-			log.Printf("gRPC server stopped: %v", err)
-		}
-	}()
-
 	httpServer := &http.Server{
-		Addr:              *httpAddr,
 		Handler:           server,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {
-		log.Printf("HTTP listening on %s", *httpAddr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("gRPC listening on %s", *addr)
+		if err := grpcServer.Serve(grpcListener); err != nil {
+			log.Printf("gRPC server stopped: %v", err)
+		}
+	}()
+
+	go func() {
+		log.Printf("HTTP listening on %s", *addr)
+		if err := httpServer.Serve(httpListener); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP server stopped: %v", err)
+		}
+	}()
+
+	go func() {
+		if err := mux.Serve(); err != nil {
+			log.Printf("mux stopped: %v", err)
 		}
 	}()
 

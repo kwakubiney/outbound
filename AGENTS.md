@@ -8,9 +8,12 @@ back to callers.
 ## Project structure
 
 ```
-cmd/agent/      Agent binary entrypoint (--token, --service, --edge, --insecure)
-cmd/edge/       Edge binary entrypoint (--auth-secret, --http-addr, --grpc-addr)
+cmd/agent/      Agent binary entrypoint (--id, --token, --service, --edge, --insecure)
+cmd/edge/       Edge binary entrypoint (--addr, --auth-secret, --request-timeout,
+                --keepalive-interval, --keepalive-timeout, --shutdown-timeout)
+cmd/demo/       Demo upstream HTTP server
 internal/agent/ Agent client: register, proxy HTTP upstream, reconnect loop
+internal/config/ ServiceFlag: repeatable --service name=port flag parser
 internal/edge/  Edge server: session management, auth, HTTP dispatch
 internal/tunnel Shared constants (headers, request ID generation, header helpers)
 proto/          Protobuf definitions (TunnelService, RegisterRequest, etc.)
@@ -18,6 +21,10 @@ internal/tunneltest/ In-process test harness using bufconn and httptest.Server
 ```
 
 ## Architecture decisions
+
+**Single-port multiplexing.** The edge listens on one TCP port (`--addr`) and
+uses cmux to route gRPC stream traffic and public HTTP traffic on the same
+listener.
 
 **Auth.** Single-tenant pre-shared secret. The edge validates the token on registration. On rejection, the connection is closed cleanly and the agent does not retry.
 
