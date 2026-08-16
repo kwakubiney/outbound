@@ -6,6 +6,8 @@ outbound-edge-linux
 /demo
 /outbound-edge
 .DS_Store
+target/
 
 # Research docs (review before committing)
 docs/research/
+AGENTS.md
